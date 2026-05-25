@@ -95,6 +95,23 @@ c?.addEventListener('click', function(e){
   setTimeout(function(){m.style.display='none';},800);
 });
 
+// ===== DINO API 调用 =====
+let dinoUrl = new URLSearchParams(location.search).get('dino') || '';
+let dinoEnabled = !!dinoUrl;
+
+async function callDINO(jpgBlob){
+  if(!dinoEnabled)return null;
+  let fd = new FormData();
+  fd.append('file', jpgBlob, 'frame.jpg');
+  try{
+    let r = await fetch(dinoUrl+'/detect', {method:'POST', body:fd});
+    if(!r.ok)return null;
+    let d = await r.json();
+    if(d.detected) return d;
+  }catch(e){}
+  return null;
+}
+
 // ===== 检测算法 =====
 function detectLines(imgData, w, h, trackMode){
   let gray = new Uint8Array(w*h);
@@ -207,6 +224,25 @@ function loop(){
 
   let trackMode = prev&&lost<30;
   let line = detectLines(img, w, h, trackMode);
+
+  // DINO 重搜索：跟踪丢失或每 60 帧
+  if(!line && dinoEnabled && rf%60===0){
+    c.toBlob(async function(blob){
+      let d=await callDINO(blob);
+      if(d&&d.box){
+        // 在 DINO 框内拟合一条线
+        let bx=d.box, x1=bx[0], y1=bx[1], x2=bx[2], y2=bx[3];
+        let mx=(x1+x2)/2, my=(y1+y2)/2;
+        // 简单：取框的水平中线
+        let fline=[x1, my, x2, my];
+        prev=fline; lost=0;
+        let m=document.getElementById('msg');
+        m.style.display='block'; m.innerHTML='DINO: '+d.label+' ('+Math.round(d.score*100)+'%)';
+        setTimeout(function(){m.style.display='none';},1500);
+      }
+    }, 'image/jpeg', 0.5);
+  }
+
   if(line){prev=line; lost=0;}
   else if(prev) lost++;
 
@@ -241,7 +277,7 @@ function loop(){
   }
 
   cx.fillStyle='rgba(150,150,150,0.7)'; cx.font='11px monospace';
-  cx.fillText('目标: 坡度2-5° | 高度0.5-1.5m | 点击画面重搜',10,h-10);
+  cx.fillText('目标: 坡度2-5° | 高度0.5-1.5m | 点击重搜 | DINO AI',10,h-10);
 
   rf++; let now=performance.now();
   if(now-t0>=1000){fps=Math.round(rf*1000/(now-t0));document.getElementById('sf').textContent=fps;rf=0;t0=now;}
