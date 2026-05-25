@@ -99,6 +99,19 @@ c?.addEventListener('click', function(e){
 let dinoUrl = new URLSearchParams(location.search).get('dino') || '';
 let dinoEnabled = !!dinoUrl;
 
+async function callSAM(jpgBlob, tapX, tapY){
+  if(!dinoEnabled)return null;
+  let fd = new FormData();
+  fd.append('file', jpgBlob, 'frame.jpg');
+  try{
+    let r = await fetch(dinoUrl+'/sam?x='+tapX+'&y='+tapY, {method:'POST', body:fd});
+    if(!r.ok)return null;
+    let d = await r.json();
+    if(d.detected) return d;
+  }catch(e){}
+  return null;
+}
+
 async function callDINO(jpgBlob){
   if(!dinoEnabled)return null;
   let fd = new FormData();
