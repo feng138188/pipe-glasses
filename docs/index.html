@@ -41,6 +41,8 @@ select{font-size:15px;padding:9px;border-radius:8px;background:#2a2a2a;color:#cc
 <script>
 let v, c, cx, streaming=false, pipeDia=100;
 let imu={pitch:0,roll:0}, rf=0, t0=0, fps=0;
+let dragMode='sam'; // 'sam' or 'ellipse'
+let dragBox=null;   // {x1,y1,x2,y2} current drag box
 let prev=null, lost=0;
 
 // 启动
@@ -105,6 +107,20 @@ async function callSAM(jpgBlob, tapX, tapY){
   fd.append('file', jpgBlob, 'frame.jpg');
   try{
     let r = await fetch(dinoUrl+'/sam?x='+tapX+'&y='+tapY, {method:'POST', body:fd});
+    if(!r.ok)return null;
+    let d = await r.json();
+    if(d.detected) return d;
+  }catch(e){}
+  return null;
+}
+
+async function callEllipse(jpgBlob, x1, y1, x2, y2){
+  if(!dinoEnabled)return null;
+  let fd = new FormData();
+  fd.append('file', jpgBlob, 'frame.jpg');
+  try{
+    let url = dinoUrl+'/ellipse?x1='+x1+'&y1='+y1+'&x2='+x2+'&y2='+y2;
+    let r = await fetch(url, {method:'POST', body:fd});
     if(!r.ok)return null;
     let d = await r.json();
     if(d.detected) return d;
@@ -290,7 +306,7 @@ function loop(){
   }
 
   cx.fillStyle='rgba(150,150,150,0.7)'; cx.font='11px monospace';
-  cx.fillText('目标: 坡度2-5° | 高度0.5-1.5m | 点击重搜 | DINO AI',10,h-10);
+  cx.fillText('目标:坡度2-5° | 双击切换:点击(SAM)/拖框(椭圆) | DINO AI',10,h-10);
 
   rf++; let now=performance.now();
   if(now-t0>=1000){fps=Math.round(rf*1000/(now-t0));document.getElementById('sf').textContent=fps;rf=0;t0=now;}

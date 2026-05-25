@@ -125,8 +125,85 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print(f"管道 API 启动: http://{args.host}:{args.port}")
-    print("  端点: /dino  (DINO 自动检测)")
-    print("  端点: /sam   (SAM 点击分割)")
-    print("  端点: /health")
-    get_dino()  # 预加载 DINO 模型
+    print("  端点: /detect  /sam  /ellipse  /health")
+    get_dino()
     uvicorn.run(app, host=args.host, port=args.port)
+
+
+@app.post("/ellipse")
+async def ellipse_detect(file: UploadFile = File(...),
+                         x1: int = 0, y1: int = 0,
+                         x2: int = 640, y2: int = 480):
+    """
+    椭圆法管道检测: 框选管口 → 拟合椭圆 → 推算管道轴向。
+
+    请求: POST /ellipse  (file=JPEG, x1,y1,x2,y2=ROI框坐标)
+    响应: {detected, angle_deg, view_angle_deg, line, ellipse}
+    """
+    t0 = time.time()
+    raw = await file.read()
+    image = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        return {"detected": False, "error": "invalid image"}
+
+    h, w = image.shape[:2]
+    x1, y1 = max(0, int(x1)), max(0, int(y1))
+    x2, y2 = min(w, int(x2)), min(h, int(y2))
+    roi = (x1, y1, x2 - x1, y2 - y1)
+    if roi[2] < 10 or roi[3] < 10:
+        return {"detected": False, "error": "ROI too small"}
+
+    # 椭圆检测
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    roi_gray = gray[y1:y2, x1:x2]
+    edges = cv2.Canny(roi_gray, 40, 120)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    best, best_area = None, 0
+    for cnt in contours:
+        if len(cnt) < 5: continue
+        area = cv2.contourArea(cnt)
+        if area < 100: continue
+        e = cv2.fitEllipse(cnt)
+        (_, _), (a, b), _ = e
+        ratio = min(a, b) / max(a, b)
+        if ratio > 0.3 and area > best_area:
+            best_area = area
+            best = e
+
+    if best is None:
+        return {"detected": False, "time_ms": round((time.time() - t0) * 1000)}
+
+    (ecx, ecy), (ea, eb), eang = best
+    ecx += x1; ecy += y1
+
+    # 推算管道轴向
+    import math
+    if ea > eb:
+        pipe_ang_rad = math.radians(eang + 90)
+        major, minor = ea, eb
+    else:
+        pipe_ang_rad = math.radians(eang)
+        major, minor = eb, ea
+    ratio = min(1.0, max(0.0, minor / major))
+    view_angle = math.degrees(math.asin(ratio))
+
+    hl = major * 1.5
+    lx1 = ecx - hl * math.cos(pipe_ang_rad)
+    ly1 = ecy - hl * math.sin(pipe_ang_rad)
+    lx2 = ecx + hl * math.cos(pipe_ang_rad)
+    ly2 = ecy + hl * math.sin(pipe_ang_rad)
+    if lx1 > lx2: lx1, ly1, lx2, ly2 = lx2, ly2, lx1, ly1
+    slope_angle = math.degrees(math.atan2(ly2 - ly1, lx2 - lx1))
+
+    elapsed = (time.time() - t0) * 1000
+    return {
+        "detected": True,
+        "angle_deg": round(slope_angle, 1),
+        "view_angle_deg": round(view_angle, 1),
+        "line": [int(lx1), int(ly1), int(lx2), int(ly2)],
+        "ellipse": {"cx": int(ecx), "cy": int(ecy),
+                     "a": int(ea), "b": int(eb), "angle": round(eang, 1)},
+        "apparent_diam_px": round(major, 1),
+        "time_ms": round(elapsed),
+    }
