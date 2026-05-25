@@ -34,7 +34,7 @@ select{font-size:15px;padding:9px;border-radius:8px;background:#2a2a2a;color:#cc
 <div id="btns">
   <button id="bu">▲</button><button id="bd">▼</button>
   <button id="bl">◀</button><button id="br">▶</button>
-  <button id="bz">归零</button>
+  <button id="bz">归零</button><button id="bm" style="background:#444">SAM</button>
   <select id="sel"><option value="50">DN50</option><option value="100" selected>DN100</option><option value="150">DN150</option><option value="200">DN200</option></select>
 </div>
 
@@ -306,7 +306,7 @@ function loop(){
   }
 
   cx.fillStyle='rgba(150,150,150,0.7)'; cx.font='11px monospace';
-  cx.fillText('目标:坡度2-5° | 双击切换:点击(SAM)/拖框(椭圆) | DINO AI',10,h-10);
+  cx.fillText('目标:坡度2-5° | 按钮切换SAM/椭圆模式 | DINO AI',10,h-10);
 
   rf++; let now=performance.now();
   if(now-t0>=1000){fps=Math.round(rf*1000/(now-t0));document.getElementById('sf').textContent=fps;rf=0;t0=now;}
