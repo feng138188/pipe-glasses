@@ -6,23 +6,21 @@
 <title>管道检测</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;overflow:hidden;background:#000}
-body{display:flex;flex-direction:column}
+body{background:#000;display:flex;flex-direction:column;height:100vh;touch-action:manipulation}
 #box{flex:1;position:relative;overflow:hidden}
-video{width:100%;height:100%;object-fit:cover}
-canvas{position:absolute;top:0;left:0;width:100%;height:100%}
-#msg{position:absolute;top:10px;left:10px;z-index:10;color:#fff;font:14px monospace;background:rgba(0,0,0,0.7);padding:8px 14px;border-radius:8px;pointer-events:none}
-#bar{display:flex;gap:8px;padding:6px 10px;background:#181818;color:#aaa;font:12px monospace;justify-content:center}
-#btns{display:flex;gap:6px;padding:6px;flex-wrap:wrap;justify-content:center;background:#111}
-button{font-size:15px;padding:9px 14px;border:none;border-radius:8px;background:#2a2a2a;color:#ccc;min-width:40px}
-button.on{background:#0a0}
-select{font-size:15px;padding:9px;border-radius:8px;background:#2a2a2a;color:#ccc;border:none}
-.g{color:#0f0}
+video,canvas{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover}
+#msg{position:absolute;top:0;left:0;z-index:10;background:rgba(0,0,0,0.75);color:#fff;padding:8px 14px;font:14px monospace;border-radius:0 0 10px 0;pointer-events:none}
+#bar{display:flex;gap:6px;padding:6px 8px;background:#181818;color:#aaa;font:12px monospace;justify-content:center;flex-wrap:wrap}
+#ctl{display:flex;gap:6px;padding:6px;background:#111;justify-content:center;flex-wrap:wrap}
+button{padding:10px 14px;border:none;border-radius:8px;font-size:15px;min-width:40px;color:#fff}
+.btn-sam{background:#0a0}.btn-el{background:#08f}.btn-other{background:#333}
+.g{color:#0f0}.b{color:#0af}
 </style>
 </head>
 <body>
 <div id="box">
   <video id="vi" autoplay playsinline muted></video>
+  <canvas id="ch" style="display:none"></canvas>
   <canvas id="c"></canvas>
   <div id="msg"></div>
 </div>
@@ -30,298 +28,181 @@ select{font-size:15px;padding:9px;border-radius:8px;background:#2a2a2a;color:#cc
   <span>俯仰:<span class="g" id="sp">0°</span></span>
   <span>横滚:<span class="g" id="sr">0°</span></span>
   <span>FPS:<span class="g" id="sf">0</span></span>
+  <span id="tag" class="b">SAM点击</span>
 </div>
-<div id="btns">
-  <button id="bu">▲</button><button id="bd">▼</button>
-  <button id="bl">◀</button><button id="br">▶</button>
-  <button id="bz">归零</button><button id="bm" style="background:#444" onclick="toggleMode(event)">SAM</button>
-  <select id="sel"><option value="50">DN50</option><option value="100" selected>DN100</option><option value="150">DN150</option><option value="200">DN200</option></select>
+<div id="ctl">
+  <button id="bt-sam" class="btn-sam">SAM</button>
+  <button id="bt-el" class="btn-other">椭圆</button>
+  <button id="bt-up" class="btn-other">▲</button>
+  <button id="bt-dn" class="btn-other">▼</button>
+  <button id="bt-lt" class="btn-other">◀</button>
+  <button id="bt-rt" class="btn-other">▶</button>
+  <button id="bt-z" class="btn-other">归零</button>
 </div>
 
 <script>
-let v, c, cx, streaming=false, pipeDia=100;
-let imu={pitch:0,roll:0}, rf=0, t0=0, fps=0;
-let dragMode='sam'; // 'sam' or 'ellipse'
-let dragBox=null;   // {x1,y1,x2,y2} current drag box
-let prev=null, lost=0;
+// 状态
+let v,c,cx,hc,hx,streaming=false;
+let imu={pitch:0,roll:0}, rf=0, t0=0;
+let prev=null, lost=0, mode='sam';
+let dragBox=null, dragStart=null;
+let apiUrl=(new URLSearchParams(location.search).get('dino')||'');
+let m=document.getElementById('msg');
 
-// 启动
-async function start(){
-  let m=document.getElementById('msg');
+// 启动按钮
+m.innerHTML='▶ 点击启动';
+m.style.cssText='cursor:pointer;pointer-events:auto;background:#0a0;top:50%;left:50%;transform:translate(-50%,-50%);font-size:20px;padding:16px 32px;text-align:center;border-radius:12px';
+function go(){
+  m.style.cssText='top:10px;left:10px;transform:none;font-size:14px;padding:8px 14px;cursor:default;pointer-events:none;background:rgba(0,0,0,0.7)';
   m.innerHTML='请求摄像头...';
-  try{
-    let s = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:640},height:{ideal:480}}, audio:false});
-    v = document.getElementById('vi');
-    c = document.getElementById('c');
-    cx = c.getContext('2d');
-    v.srcObject = s;
-    v.onloadedmetadata = function(){
-      v.play();
-      streaming = true;
-      t0 = performance.now();
-      m.innerHTML = '点击画面锁定管道';
-      setTimeout(function(){ if(streaming) m.style.display='none'; }, 3000);
-      loop();
-    };
-  }catch(e){
-    m.innerHTML = '摄像头错误: '+e.message;
-  }
+  v=document.getElementById('vi'); c=document.getElementById('c'); cx=c.getContext('2d');
+  hc=document.getElementById('ch'); hx=hc.getContext('2d');
+  navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:640},height:{ideal:480}},audio:false}).then(s=>{
+    v.srcObject=s; v.onloadedmetadata=()=>{v.play(); streaming=true; t0=performance.now(); m.innerHTML=''; loop();};
+  }).catch(e=>{m.innerHTML='摄像头错误: '+e.message;});
 }
-
-// 点击启动
-(function(){
-  let m = document.getElementById('msg');
-  m.innerHTML = '▶ 点击启动';
-  m.style.cssText = 'cursor:pointer;pointer-events:auto;background:#0a0;top:50%;left:50%;transform:translate(-50%,-50%);font-size:20px;padding:16px 32px;text-align:center;border-radius:12px';
-  m.addEventListener('click', function(){
-    m.style.cssText = 'top:10px;left:10px;transform:none;font-size:14px;padding:8px 14px;cursor:default;pointer-events:none;background:rgba(0,0,0,0.7)';
-    start();
-  });
-})();
+m.addEventListener('click',go);
 
 // 陀螺仪
-window.addEventListener('deviceorientation', function(e){
+window.addEventListener('deviceorientation',e=>{
   if(e.beta!==null)imu.pitch=e.beta;
   if(e.gamma!==null)imu.roll=e.gamma;
   document.getElementById('sp').textContent=imu.pitch.toFixed(1)+'°';
   document.getElementById('sr').textContent=imu.roll.toFixed(1)+'°';
-}, true);
+},true);
 
-// 点击锁定管道
-c?.addEventListener('click', function(e){
-  if(!streaming||!prev)return;
-  // 清除跟踪，让下一帧全局重搜
-  prev=null; lost=0;
-  let m=document.getElementById('msg');
-  m.style.display='block'; m.innerHTML='重新搜索...';
-  setTimeout(function(){m.style.display='none';},800);
+// 模式切换
+document.getElementById('bt-sam').addEventListener('click',()=>{
+  mode='sam'; document.getElementById('bt-sam').className='btn-sam';
+  document.getElementById('bt-el').className='btn-other';
+  document.getElementById('tag').textContent='SAM点击';
+});
+document.getElementById('bt-el').addEventListener('click',()=>{
+  mode='ellipse'; document.getElementById('bt-el').className='btn-el';
+  document.getElementById('bt-sam').className='btn-other';
+  document.getElementById('tag').textContent='椭圆框选';
 });
 
-// ===== DINO API 调用 =====
-let dinoUrl = new URLSearchParams(location.search).get('dino') || '';
-let dinoEnabled = !!dinoUrl;
+// 画布触屏
+c.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  if(!streaming)return;
+  let r=c.getBoundingClientRect(), vw=v.videoWidth||640, vh=v.videoHeight||480;
+  let x=Math.round((e.clientX-r.left)*vw/r.width), y=Math.round((e.clientY-r.top)*vh/r.height);
 
-async function callSAM(jpgBlob, tapX, tapY){
-  if(!dinoEnabled)return null;
-  let fd = new FormData();
-  fd.append('file', jpgBlob, 'frame.jpg');
+  if(mode==='ellipse'){
+    dragStart={x,y}; dragBox=null;
+  }else{
+    if(!apiUrl)return;
+    m.style.display='block'; m.innerHTML='SAM...';
+    c.toBlob(b=>{callAPI('/sam?x='+x+'&y='+y,b);},'image/jpeg',0.6);
+  }
+});
+
+c.addEventListener('pointermove',e=>{
+  if(!dragStart)return;
+  let r=c.getBoundingClientRect(), vw=v.videoWidth||640, vh=v.videoHeight||480;
+  let x=Math.round((e.clientX-r.left)*vw/r.width), y=Math.round((e.clientY-r.top)*vh/r.height);
+  dragBox={x1:Math.min(dragStart.x,x),y1:Math.min(dragStart.y,y),x2:Math.max(dragStart.x,x),y2:Math.max(dragStart.y,y)};
+});
+
+c.addEventListener('pointerup',e=>{
+  if(!dragStart||!dragBox){dragStart=null;return;}
+  let box=dragBox; dragStart=null; dragBox=null;
+  m.style.display='block'; m.innerHTML='椭圆检测...';
+  c.toBlob(b=>{callAPI('/ellipse?x1='+box.x1+'&y1='+box.y1+'&x2='+box.x2+'&y2='+box.y2,b);},'image/jpeg',0.6);
+});
+
+c.addEventListener('pointercancel',()=>{dragStart=null; dragBox=null;});
+
+async function callAPI(path,blob){
+  if(!apiUrl||!blob)return;
+  let fd=new FormData(); fd.append('file',blob,'f.jpg');
   try{
-    let r = await fetch(dinoUrl+'/sam?x='+tapX+'&y='+tapY, {method:'POST', body:fd});
-    if(!r.ok)return null;
-    let d = await r.json();
-    if(d.detected) return d;
-  }catch(e){}
-  return null;
+    let r=await fetch(apiUrl+path,{method:'POST',body:fd});
+    if(!r.ok){m.innerHTML='API错误';return;}
+    let d=await r.json();
+    if(d&&d.line){prev=d.line; lost=0; m.innerHTML='OK 角度:'+d.angle_deg+'°';}
+    else{m.innerHTML='未检测到';}
+  }catch(e){m.innerHTML='连接失败';}
+  setTimeout(()=>{m.style.display='none';},1500);
 }
 
-async function callEllipse(jpgBlob, x1, y1, x2, y2){
-  if(!dinoEnabled)return null;
-  let fd = new FormData();
-  fd.append('file', jpgBlob, 'frame.jpg');
-  try{
-    let url = dinoUrl+'/ellipse?x1='+x1+'&y1='+y1+'&x2='+x2+'&y2='+y2;
-    let r = await fetch(url, {method:'POST', body:fd});
-    if(!r.ok)return null;
-    let d = await r.json();
-    if(d.detected) return d;
-  }catch(e){}
-  return null;
-}
-
-async function callDINO(jpgBlob){
-  if(!dinoEnabled)return null;
-  let fd = new FormData();
-  fd.append('file', jpgBlob, 'frame.jpg');
-  try{
-    let r = await fetch(dinoUrl+'/detect', {method:'POST', body:fd});
-    if(!r.ok)return null;
-    let d = await r.json();
-    if(d.detected) return d;
-  }catch(e){}
-  return null;
-}
-
-// ===== 检测算法 =====
-function detectLines(imgData, w, h, trackMode){
-  let gray = new Uint8Array(w*h);
-  let d = imgData.data;
-  for(let i=0,j=0;i<d.length;i+=4,j++) gray[j]=Math.round(d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114);
-
-  // Sobel
-  let edge = new Uint8Array(w*h);
-  for(let y=1;y<h-1;y++){
-    for(let x=1;x<w-1;x++){
-      let p=y*w+x;
-      let gx = -gray[p-w-1]-2*gray[p-1]-gray[p+w-1]+gray[p-w+1]+2*gray[p+1]+gray[p+w+1];
-      let gy = -gray[p-w-1]-2*gray[p-w]-gray[p-w+1]+gray[p+w-1]+2*gray[p+w]+gray[p+w+1];
-      edge[p] = (Math.sqrt(gx*gx+gy*gy)>70)?255:0;
-    }
+// 本地检测
+function detectLocal(img,w,h){
+  let gray=new Uint8Array(w*h), d=img.data;
+  for(let i=0,j=0;i<d.length;i+=4,j++) gray[j]=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;
+  let edge=new Uint8Array(w*h);
+  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+    let p=y*w+x;
+    let gx=-gray[p-w-1]-2*gray[p-1]-gray[p+w-1]+gray[p-w+1]+2*gray[p+1]+gray[p+w+1];
+    let gy=-gray[p-w-1]-2*gray[p-w]-gray[p-w+1]+gray[p+w-1]+2*gray[p+w]+gray[p+w+1];
+    edge[p]=(Math.sqrt(gx*gx+gy*gy)>70)?255:0;
   }
-
-  // 找长水平连续段
-  let lines = [];
-  let ryStart=0, ryEnd=h, minLen=150;
-  if(trackMode && prev){
-    let cy = (prev[1]+prev[3])/2;
-    ryStart = Math.max(0, cy-60);
-    ryEnd = Math.min(h, cy+60);
-  }
-
-  for(let y=ryStart; y<ryEnd; y+=3){
-    let run=0, bestRun=0, bestX=0;
-    for(let x=0; x<w; x++){
-      if(edge[y*w+x]>0){run++; if(run>bestRun){bestRun=run; bestX=x;}}
-      else run=0;
-    }
-    if(bestRun>=minLen){
-      let fy=y;
-      // 找最佳拟合线：扫描相邻 y 的线段
-      let allRuns=[];
-      for(let dy=-5;dy<=5;dy+=2){
-        let yy=y+dy; if(yy<0||yy>=h)continue;
-        let r=0, bx=0;
-        for(let x=bestX-bestRun; x<bestX+20; x++){
-          if(x>=0&&x<w&&edge[yy*w+x]>0)r++; else {if(r>bestRun*0.3)allRuns.push([yy,x-r,x]); r=0;}
-        }
-      }
-      if(allRuns.length>0) lines.push([bestX-bestRun, y, bestX, y]);
-    }
-  }
-
-  if(lines.length===0)return null;
-
-  // 选最长+颜色分数
-  let best=null, bestScore=0;
-  for(let l of lines){
-    let dx=l[2]-l[0], dy=l[3]-l[1];
-    let len=Math.sqrt(dx*dx+dy*dy);
-    if(len<100)continue;
-    let score=len;
-    // 颜色一致性
-    let nx=-dy/(len||1), ny=dx/(len||1);
-    let samples=[];
-    for(let t=0;t<8;t++){
-      let px=Math.round(l[0]+dx*t/7+nx*12), py=Math.round(l[1]+dy*t/7+ny*12);
-      if(px<0||px>=w||py<0||py>=h)continue;
-      let i0=(py*w+px)*4;
-      samples.push([d[i0],d[i0+1],d[i0+2]]);
-    }
-    if(samples.length>=5){
-      let m=[0,0,0],vr=[0,0,0];
-      for(let s of samples){m[0]+=s[0];m[1]+=s[1];m[2]+=s[2];}
-      m=m.map(x=>x/samples.length);
-      for(let s of samples){vr[0]+=(s[0]-m[0])**2;vr[1]+=(s[1]-m[1])**2;vr[2]+=(s[2]-m[2])**2;}
-      let stdv=Math.sqrt((vr[0]+vr[1]+vr[2])/samples.length/3)/100;
-      score=len*(1+Math.max(0,1-stdv));
-    }
-    if(score>bestScore){bestScore=score; best=l;}
+  let best=null,bl=0,ryS=0,ryE=h;
+  if(prev&&lost<30){let cy=(prev[1]+prev[3])/2; ryS=Math.max(0,cy-50); ryE=Math.min(h,cy+50);}
+  for(let y=ryS;y<ryE;y+=3){
+    let run=0;
+    for(let x=0;x<w;x++){if(edge[y*w+x])run++;else{if(run>=150&&run>bl){bl=run;best=[x-run,y,x,y];}run=0;}}
+    if(run>=150&&run>bl){bl=run;best=[w-run,y,w,y];}
   }
   return best;
 }
 
-function calcSlope(ln, iw, ih){
-  let[x1,y1,x2,y2]=ln;
-  // Roll补偿
-  if(Math.abs(imu.roll)>0.5){
-    let r=-imu.roll*Math.PI/180, cr=Math.cos(r), sr=Math.sin(r);
-    let cx0=iw/2, cy0=ih/2;
-    let dx1=x1-cx0,dy1=y1-cy0,dx2=x2-cx0,dy2=y2-cy0;
-    x1=dx1*cr-dy1*sr+cx0; y1=dx1*sr+dy1*cr+cy0;
-    x2=dx2*cr-dy2*sr+cx0; y2=dx2*sr+dy2*cr+cy0;
-  }
-  if(x1>x2){let t=x1;x1=x2;x2=t;t=y1;y1=y2;y2=t;}
-  let ia=Math.atan2(y2-y1,x2-x1)*180/Math.PI;
-  let ra=ia-imu.pitch;
-  let p=Math.tan(ra*Math.PI/180)*100;
-  return{ra:ra, pct:p, x1:x1,y1:y1,x2:x2,y2:y2};
-}
-
-function estHt(ln, ih){
-  let cy=(ln[1]+ln[3])/2;
-  let va=(cy-ih/2)*60/ih;
-  return Math.max(0, 1.6-2*Math.tan((va+imu.pitch)*Math.PI/180));
-}
-
-// ===== 主循环 =====
 function loop(){
   if(!streaming){requestAnimationFrame(loop);return;}
+  let vw=v.videoWidth||640, vh=v.videoHeight||480;
+  c.width=vw; c.height=vh;
+  cx.drawImage(v,0,0,vw,vh);
+  let img=cx.getImageData(0,0,vw,vh);
 
-  let w=v.videoWidth||640, h=v.videoHeight||480;
-  c.width=w; c.height=h;
-  cx.drawImage(v,0,0,w,h);
-  let img = cx.getImageData(0,0,w,h);
-
-  let trackMode = prev&&lost<30;
-  let line = detectLines(img, w, h, trackMode);
-
-  // DINO 重搜索：跟踪丢失或每 60 帧
-  if(!line && dinoEnabled && rf%60===0){
-    c.toBlob(async function(blob){
-      let d=await callDINO(blob);
-      if(d&&d.box){
-        // 在 DINO 框内拟合一条线
-        let bx=d.box, x1=bx[0], y1=bx[1], x2=bx[2], y2=bx[3];
-        let mx=(x1+x2)/2, my=(y1+y2)/2;
-        // 简单：取框的水平中线
-        let fline=[x1, my, x2, my];
-        prev=fline; lost=0;
-        let m=document.getElementById('msg');
-        m.style.display='block'; m.innerHTML='DINO: '+d.label+' ('+Math.round(d.score*100)+'%)';
-        setTimeout(function(){m.style.display='none';},1500);
-      }
-    }, 'image/jpeg', 0.5);
+  if(!prev||lost>0){
+    let line=detectLocal(img,vw,vh);
+    if(line){prev=line; lost=0;}else if(prev)lost++;
   }
 
-  if(line){prev=line; lost=0;}
-  else if(prev) lost++;
-
-  if(line){
-    let sl = calcSlope(line, w, h);
-    let ht = estHt(line, h);
-    let absA = Math.abs(sl.ra);
-
-    // 画线
+  if(prev){
+    let[x1,y1,x2,y2]=prev;
+    if(x1>x2){let t=x1;x1=x2;x2=t;t=y1;y1=y2;y2=t;}
+    let ra=Math.atan2(y2-y1,x2-x1)*180/Math.PI-imu.pitch;
     cx.strokeStyle='#0f0'; cx.lineWidth=3;
-    cx.beginPath(); cx.moveTo(sl.x1,sl.y1); cx.lineTo(sl.x2,sl.y2); cx.stroke();
-    cx.fillStyle='#0f0';
-    cx.beginPath(); cx.arc(sl.x1,sl.y1,5,0,Math.PI*2); cx.fill();
-    cx.beginPath(); cx.arc(sl.x2,sl.y2,5,0,Math.PI*2); cx.fill();
-    // 水平参考
-    let my=(sl.y1+sl.y2)/2;
-    cx.strokeStyle='rgba(150,150,150,0.5)'; cx.lineWidth=1;
-    cx.setLineDash([8,8]); cx.beginPath(); cx.moveTo(0,my); cx.lineTo(w,my); cx.stroke(); cx.setLineDash([]);
-
-    // 面板
-    cx.fillStyle='rgba(0,0,0,0.65)'; cx.fillRect(10,10,255,120);
-    let sy=32;
+    cx.beginPath(); cx.moveTo(x1,y1); cx.lineTo(x2,y2); cx.stroke();
+    cx.fillStyle='#0f0'; cx.beginPath(); cx.arc(x1,y1,5,0,Math.PI*2); cx.fill();
+    cx.beginPath(); cx.arc(x2,y2,5,0,Math.PI*2); cx.fill();
+    let my=(y1+y2)/2;
+    cx.setLineDash([8,8]); cx.strokeStyle='rgba(150,150,150,0.5)'; cx.lineWidth=1;
+    cx.beginPath(); cx.moveTo(0,my); cx.lineTo(vw,my); cx.stroke(); cx.setLineDash([]);
+    cx.fillStyle='rgba(0,0,0,0.65)'; cx.fillRect(10,10,250,100);
     cx.font='bold 14px monospace';
+    let absA=Math.abs(ra);
     cx.fillStyle=(absA>=2&&absA<=5)?'#0f0':(absA<1.5||absA>6)?'#f44':'#ff0';
-    cx.fillText('坡度: '+sl.ra.toFixed(1)+'° ('+sl.pct.toFixed(1)+'%)',20,sy); sy+=24;
-    cx.fillStyle='#0f0'; cx.fillText('高度: '+ht.toFixed(2)+'m (DN'+pipeDia+')',20,sy); sy+=24;
+    cx.fillText('坡度: '+ra.toFixed(1)+'° ('+(Math.tan(ra*Math.PI/180)*100).toFixed(1)+'%)',20,32);
+    cx.fillStyle='#0f0'; cx.fillText('高度: N/A (DN100)',20,56);
     cx.fillStyle='#aaa'; cx.font='11px monospace';
-    cx.fillText('pitch:'+imu.pitch.toFixed(0)+'° roll:'+imu.roll.toFixed(0)+'°',20,sy); sy+=22;
-    cx.font='bold 14px monospace';
-    cx.fillStyle=(absA>=2&&absA<=5)?'#0f0':'#f44';
-    cx.fillText((absA>=2&&absA<=5)?'✓ PASS':'✗ 需调整',20,sy);
+    cx.fillText('pitch:'+imu.pitch.toFixed(0)+'° roll:'+imu.roll.toFixed(0)+'°',20,74);
+  }
+
+  if(dragBox){
+    cx.strokeStyle='#0ff'; cx.lineWidth=2;
+    cx.strokeRect(dragBox.x1,dragBox.y1,dragBox.x2-dragBox.x1,dragBox.y2-dragBox.y1);
   }
 
   cx.fillStyle='rgba(150,150,150,0.7)'; cx.font='11px monospace';
-  cx.fillText('目标:坡度2-5° | 按钮切换SAM/椭圆模式 | DINO AI',10,h-10);
+  cx.fillText('目标:2-5° | SAM/椭圆 | '+(apiUrl?'AI':'离线'),10,vh-10);
 
   rf++; let now=performance.now();
-  if(now-t0>=1000){fps=Math.round(rf*1000/(now-t0));document.getElementById('sf').textContent=fps;rf=0;t0=now;}
+  if(now-t0>=1000){document.getElementById('sf').textContent=Math.round(rf*1000/(now-t0));rf=0;t0=now;}
   requestAnimationFrame(loop);
 }
 
-// 按钮
-[{id:'bu',p:0,r:0},{id:'bd',p:25,r:0},{id:'bl',p:0,r:-15},{id:'br',p:0,r:15}].forEach(function(b){
+// IMU按钮
+[{id:'bt-up',p:0,r:0},{id:'bt-dn',p:25,r:0},{id:'bt-lt',p:0,r:-15},{id:'bt-rt',p:0,r:15}].forEach(b=>{
   let el=document.getElementById(b.id);
-  el.addEventListener('pointerdown',function(){el.classList.add('on');imu.pitch=b.p;imu.roll=b.r;});
-  el.addEventListener('pointerup',function(){el.classList.remove('on');imu.pitch=0;imu.roll=0;});
-  el.addEventListener('pointerleave',function(){el.classList.remove('on');imu.pitch=0;imu.roll=0;});
+  el.addEventListener('pointerdown',()=>{el.classList.add('on');imu.pitch=b.p;imu.roll=b.r;});
+  el.addEventListener('pointerup',()=>{el.classList.remove('on');imu.pitch=0;imu.roll=0;});
+  el.addEventListener('pointerleave',()=>{el.classList.remove('on');imu.pitch=0;imu.roll=0;});
 });
-document.getElementById('bz').addEventListener('click',function(){imu.pitch=0;imu.roll=0;});
-document.getElementById('sel').addEventListener('change',function(){pipeDia=parseInt(document.getElementById('sel').value);});
+document.getElementById('bt-z').addEventListener('click',()=>{imu.pitch=0;imu.roll=0;});
 </script>
 </body>
 </html>
