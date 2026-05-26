@@ -140,8 +140,9 @@ function detectLocal(img,w,h){
     let gy=-gray[p-w-1]-2*gray[p-w]-gray[p-w+1]+gray[p+w-1]+2*gray[p+w]+gray[p+w+1];
     edge[p]=(Math.sqrt(gx*gx+gy*gy)>70)?255:0;
   }
-  let best=null,bl=0,ryS=0,ryE=h;
-  if(prev&&lost<30){let cy=(prev[1]+prev[3])/2; ryS=Math.max(0,cy-50); ryE=Math.min(h,cy+50);}
+  let mrg=30; // 排除屏幕边缘
+  let best=null,bl=0,ryS=mrg,ryE=h-mrg;
+  if(prev&&lost<30){let cy=(prev[1]+prev[3])/2; ryS=Math.max(mrg,cy-50); ryE=Math.min(h-mrg,cy+50);}
   for(let y=ryS;y<ryE;y+=3){
     let run=0;
     for(let x=0;x<w;x++){if(edge[y*w+x])run++;else{if(run>=150&&run>bl){bl=run;best=[x-run,y,x,y];}run=0;}}
