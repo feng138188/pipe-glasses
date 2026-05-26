@@ -8,7 +8,8 @@
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;display:flex;flex-direction:column;height:100vh;touch-action:manipulation}
 #box{flex:1;position:relative;overflow:hidden}
-video,canvas{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover}
+video{z-index:1;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover}
+canvas{z-index:2;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover}
 #msg{position:absolute;top:0;left:0;z-index:10;background:rgba(0,0,0,0.75);color:#fff;padding:8px 14px;font:14px monospace;border-radius:0 0 10px 0;pointer-events:none}
 #bar{display:flex;gap:6px;padding:6px 8px;background:#181818;color:#aaa;font:12px monospace;justify-content:center;flex-wrap:wrap}
 #ctl{display:flex;gap:6px;padding:6px;background:#111;justify-content:center;flex-wrap:wrap}
