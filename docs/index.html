@@ -158,10 +158,13 @@ function loop(){
   cx.drawImage(v,0,0,vw,vh);
   let img=cx.getImageData(0,0,vw,vh);
 
-  if(!prev||lost>0){
+  // 仅在纯离线时跑本地检测，有API时靠用户点SAM/椭圆
+  if(!apiUrl && (!prev||lost>0)){
     let line=detectLocal(img,vw,vh);
     if(line){prev=line; lost=0;}else if(prev)lost++;
   }
+  // 跟踪丢失自动清除（API模式）
+  if(apiUrl && lost>90){prev=null; lost=0;}
 
   if(prev){
     let[x1,y1,x2,y2]=prev;
