@@ -8,8 +8,9 @@
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;display:flex;flex-direction:column;height:100vh;touch-action:manipulation}
 #box{flex:1;position:relative;overflow:hidden}
-video{z-index:1;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover}
-canvas{z-index:2;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover}
+video{z-index:1;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
+canvas{z-index:2;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
+#touch{z-index:3;position:absolute;top:0;left:0;width:100%;height:100%;touch-action:none}
 #msg{position:absolute;top:0;left:0;z-index:10;background:rgba(0,0,0,0.75);color:#fff;padding:8px 14px;font:14px monospace;border-radius:0 0 10px 0;pointer-events:none}
 #bar{display:flex;gap:6px;padding:6px 8px;background:#181818;color:#aaa;font:12px monospace;justify-content:center;flex-wrap:wrap}
 #ctl{display:flex;gap:6px;padding:6px;background:#111;justify-content:center;flex-wrap:wrap}
@@ -23,6 +24,7 @@ button{padding:10px 14px;border:none;border-radius:8px;font-size:15px;min-width:
   <video id="vi" autoplay playsinline muted></video>
   <canvas id="ch" style="display:none"></canvas>
   <canvas id="c"></canvas>
+  <div id="touch"></div>
   <div id="msg"></div>
 </div>
 <div id="bar">
@@ -84,11 +86,12 @@ document.getElementById('bt-el').addEventListener('click',()=>{
   document.getElementById('tag').textContent='椭圆框选';
 });
 
-// 画布触屏
-c.addEventListener('pointerdown',e=>{
+// 触屏（绑定到透明 touch 层）
+let tc = document.getElementById('touch');
+tc.addEventListener('pointerdown',e=>{
   e.preventDefault();
   if(!streaming)return;
-  let r=c.getBoundingClientRect(), vw=v.videoWidth||640, vh=v.videoHeight||480;
+  let r=tc.getBoundingClientRect(), vw=v.videoWidth||640, vh=v.videoHeight||480;
   let x=Math.round((e.clientX-r.left)*vw/r.width), y=Math.round((e.clientY-r.top)*vh/r.height);
 
   if(mode==='ellipse'){
@@ -100,21 +103,21 @@ c.addEventListener('pointerdown',e=>{
   }
 });
 
-c.addEventListener('pointermove',e=>{
+tc.addEventListener('pointermove',e=>{
   if(!dragStart)return;
-  let r=c.getBoundingClientRect(), vw=v.videoWidth||640, vh=v.videoHeight||480;
+  let r=tc.getBoundingClientRect(), vw=v.videoWidth||640, vh=v.videoHeight||480;
   let x=Math.round((e.clientX-r.left)*vw/r.width), y=Math.round((e.clientY-r.top)*vh/r.height);
   dragBox={x1:Math.min(dragStart.x,x),y1:Math.min(dragStart.y,y),x2:Math.max(dragStart.x,x),y2:Math.max(dragStart.y,y)};
 });
 
-c.addEventListener('pointerup',e=>{
+tc.addEventListener('pointerup',e=>{
   if(!dragStart||!dragBox){dragStart=null;return;}
   let box=dragBox; dragStart=null; dragBox=null;
   m.style.display='block'; m.innerHTML='椭圆检测...';
   c.toBlob(b=>{callAPI('/ellipse?x1='+box.x1+'&y1='+box.y1+'&x2='+box.x2+'&y2='+box.y2,b);},'image/jpeg',0.6);
 });
 
-c.addEventListener('pointercancel',()=>{dragStart=null; dragBox=null;});
+tc.addEventListener('pointercancel',()=>{dragStart=null; dragBox=null;});
 
 async function callAPI(path,blob){
   if(!apiUrl||!blob)return;
