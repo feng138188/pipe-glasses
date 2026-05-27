@@ -6,6 +6,9 @@ GPU 端运行，接收手机发来的图像帧，返回 DINO 检测到的管道�
 启动: python dino_server.py --port 8777
 """
 
+import sys, os
+sys.path.insert(0, "/home/f/桌面/gd/ai_pipe_glasses_project/mobilesam_repo")
+
 import io
 import time
 import argparse

@@ -14,7 +14,7 @@ import cv2
 from typing import Optional
 
 # MobileSAM 依赖
-sys.path.insert(0, "/tmp/mobilesam_repo")
+sys.path.insert(0, "/home/f/桌面/gd/ai_pipe_glasses_project/mobilesam_repo")
 from mobile_sam import sam_model_registry, SamPredictor
 import torch
 
@@ -76,27 +76,46 @@ def detect_pipe_with_tap(image_bgr: np.ndarray,
     if cv2.contourArea(cnt) < 500:
         return None
 
+    # ---- 方法1: PCA 主轴（对不规则形状更鲁棒） ----
+    # 对轮廓点做 PCA，第一主成分 = 管道轴向
+    pts = cnt.reshape(-1, 2).astype(np.float32)
+    mean = pts.mean(axis=0)
+    cov = np.cov((pts - mean).T)
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    major_axis = eigenvectors[:, -1]  # 最大特征值 → 主轴
+
+    # 主轴射线 → 线段
+    # 投影轮廓点到主轴上，取最小/最大投影值
+    proj = (pts - mean) @ major_axis
+    t_min, t_max = proj.min(), proj.max()
+
+    x1 = mean[0] + t_min * major_axis[0]
+    y1 = mean[1] + t_min * major_axis[1]
+    x2 = mean[0] + t_max * major_axis[0]
+    y2 = mean[1] + t_max * major_axis[1]
+
+    # ---- 方法2: minAreaRect 为辅（取短轴 = 管径） ----
     rect = cv2.minAreaRect(cnt)
-    (cx, cy), (rw, rh), angle = rect
+    (_, _), (rw, rh), _ = rect
+    diameter_px = min(rw, rh)  # 短边 = 管径
+    box_cx, box_cy = rect[0]
+    box = [int(box_cx - max(rw, rh) / 2), int(box_cy - min(rw, rh) / 2),
+           int(box_cx + max(rw, rh) / 2), int(box_cy + min(rw, rh) / 2)]
 
-    if rw < rh:
-        rw, rh = rh, rw
-        angle += 90
-
-    angle_rad = math.radians(angle)
-    half_len = rw / 2
-    x1 = cx - half_len * math.cos(angle_rad)
-    y1 = cy - half_len * math.sin(angle_rad)
-    x2 = cx + half_len * math.cos(angle_rad)
-    y2 = cy + half_len * math.sin(angle_rad)
-
+    # ---- 确保方向一致 ----
     if x1 > x2:
         x1, y1, x2, y2 = x2, y2, x1, y1
 
+    line_angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
+    # 确保是沿管道轴向的方向（不是管壁方向）
+    # PCA 天然给出主轴，但若长宽比接近1，警告
+    aspect = max(rw, rh) / (min(rw, rh) + 0.01)
+
     return {
         "line": [int(x1), int(y1), int(x2), int(y2)],
-        "angle_deg": round(math.degrees(math.atan2(y2 - y1, x2 - x1)), 1),
-        "diameter_px": round(rh, 1),
+        "angle_deg": round(line_angle, 1),
+        "diameter_px": round(diameter_px, 1),
         "confidence": round(score, 2),
-        "box": [int(cx - rw / 2), int(cy - rh / 2), int(cx + rw / 2), int(cy + rh / 2)],
+        "aspect_ratio": round(aspect, 1),
+        "box": box,
     }

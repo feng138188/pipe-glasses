@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>管道检测</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000}
+body{display:flex;flex-direction:column}
+#top{flex:1;position:relative;overflow:hidden}
+#vi,#c{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover}
+#vi{opacity:1}
+#c{opacity:1}
+#msg{position:absolute;top:10px;left:10px;background:rgba(0,0,0,0.75);color:#fff;padding:8px 14px;font:14px monospace;border-radius:8px;pointer-events:none;z-index:10}
+#bar{display:flex;gap:8px;padding:6px 10px;background:#181818;color:#aaa;font:12px monospace;justify-content:center}
+#btns{display:flex;gap:6px;padding:6px;flex-wrap:wrap;justify-content:center;background:#111}
+button{font-size:15px;padding:9px 14px;border:none;border-radius:8px;background:#2a2a2a;color:#ccc;min-width:40px}
+button.on{background:#0a0;color:#fff}
+select{font-size:15px;padding:9px;border-radius:8px;background:#2a2a2a;color:#ccc;border:none}
+.g{color:#0f0}.y{color:#ff0}.r{color:#f44}
+</style>
+</head>
+<body>
+<div id="top">
+  <video id="vi" autoplay playsinline></video>
+  <canvas id="c"></canvas>
+  <div id="msg" style="cursor:pointer;pointer-events:auto;background:#0a0;top:50%;left:50%;transform:translate(-50%,-50%);font-size:20px;padding:16px 32px;text-align:center">▶ 点击启动</div>
+</div>
+<div id="bar">
+  <span>俯仰:<span class="g" id="sp">0°</span></span>
+  <span>横滚:<span class="g" id="sr">0°</span></span>
+  <span>FPS:<span class="g" id="sf">0</span></span>
+</div>
+<div id="btns">
+  <button id="bu">▲</button><button id="bd">▼</button>
+  <button id="bl">◀</button><button id="br">▶</button>
+  <button id="bz">归零</button>
+  <select id="sel"><option value="50">DN50</option><option value="100" selected>DN100</option><option value="150">DN150</option><option value="200">DN200</option></select>
+</div>
+
+<script>
+let v, c, cx, streaming=false, pipeDia=100;
+let imu={pitch:0,roll:0}, rf=0, t0=0;
+let prev=null, lost=0, maxLost=30;
+let fps=0;
+
+// 初始化
+async function init(){
+  v=document.getElementById('vi'); c=document.getElementById('c'); cx=c.getContext('2d');
+  document.getElementById('msg').innerHTML='请求摄像头...';
+  document.getElementById('msg').style.background='rgba(0,0,0,0.75)';
+  document.getElementById('msg').style.fontSize='16px';
+  document.getElementById('msg').style.top='10px';
+  document.getElementById('msg').style.left='10px';
+  document.getElementById('msg').style.transform='none';
+  document.getElementById('msg').style.cursor='default';
+  document.getElementById('msg').style.pointerEvents='none';
+  try{
+    let s=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:640},height:{ideal:480}},audio:false});
+    v.srcObject=s;
+    // 手机浏览器需要静音才能 autoplay
+    v.muted=true;
+    v.playsInline=true;
+    await v.play();
+    streaming=true;
+    t0=performance.now();
+    document.getElementById('msg').innerHTML='点击画面锁定管道';
+    loop();
+  }catch(e){
+    document.getElementById('msg').innerHTML='摄像头错误: '+e.message+'<br><small>请刷新重试</small>';
+  }
+}
+
+// 点击启动
+document.getElementById('msg').addEventListener('click',init);
+
+// 陀螺仪
+if(typeof DeviceOrientationEvent!=='undefined'){
+  window.addEventListener('deviceorientation',e=>{
+    if(e.beta!==null)imu.pitch=e.beta;
+    if(e.gamma!==null)imu.roll=e.gamma;
+    document.getElementById('sp').textContent=imu.pitch.toFixed(1)+'°';
+    document.getElementById('sr').textContent=imu.roll.toFixed(1)+'°';
+  });
+}
+
+// 点击锁定
+c.addEventListener('click',e=>{
+  if(!streaming)return;
+  let r=c.getBoundingClientRect(), vw=v.videoWidth||640, vh=v.videoHeight||480;
+  let tx=(e.clientX-r.left)*vw/r.width, ty=(e.clientY-r.top)*vh/r.height;
+  // 全局搜索离点击点最近的边缘线
+  let ctx=cx, w=vw, h=vh;
+  c.width=w; c.height=h;
+  ctx.drawImage(v,0,0,w,h);
+  let img=ctx.getImageData(0,0,w,h);
+  let lines=detectLines(img,w,h,false);
+  let best=null, bestD=Infinity;
+  for(let l of lines){
+    let mx=(l[0]+l[2])/2, my=(l[1]+l[3])/2;
+    let d=Math.sqrt((mx-tx)**2+(my-ty)**2);
+    if(d<bestD){bestD=d; best=l;}
+  }
+  if(best){prev=best; lost=0; document.getElementById('msg').innerHTML='已锁定'; setTimeout(()=>document.getElementById('msg').style.display='none',800);}
+});
+
+// 简易边缘检测（纯 canvas 像素操作）
+function detectLines(img,w,h,track){
+  let gray=new Uint8Array(w*h);
+  for(let i=0,ii=0;i<img.data.length;i+=4,ii++){
+    gray[ii]=Math.round(img.data[i]*0.299+img.data[i+1]*0.587+img.data[i+2]*0.114);
+  }
+
+  // Sobel 边缘
+  let edge=new Uint8Array(w*h);
+  for(let y=1;y<h-1;y++){
+    for(let x=1;x<w-1;x++){
+      let p=y*w+x;
+      let gx=-gray[p-w-1]-2*gray[p-1]-gray[p+w-1]+gray[p-w+1]+2*gray[p+1]+gray[p+w+1];
+      let gy=-gray[p-w-1]-2*gray[p-w]-gray[p-w+1]+gray[p+w-1]+2*gray[p+w]+gray[p+w+1];
+      let g=Math.sqrt(gx*gx+gy*gy);
+      edge[p]=g>60?255:0;
+    }
+  }
+
+  // 简易 Hough——扫描若干方向找长连续边缘段
+  let lines=[];
+  let minLen=150;
+  let angles=[];
+  for(let a=-25;a<=25;a+=2)angles.push(a*Math.PI/180);
+
+  if(track && prev){
+    // 跟踪模式：只在上一帧附近搜
+    let cy=(prev[1]+prev[3])/2;
+    let top=Math.max(0,cy-50), bot=Math.min(h-1,cy+50);
+    searchRegion(0,w,top,bot);
+  }else{
+    searchRegion(0,w,0,h);
+  }
+
+  function searchRegion(rx,rw,ry,rh){
+    for(let a of angles){
+      let ca=Math.cos(a), sa=Math.sin(a);
+      for(let y0=ry;y0<ry+rh;y0+=4){
+        let xStart=rx, run=0, bestRun=0, bestX=0, bestY=0;
+        for(let x=rx;x<rx+rw;x++){
+          let p=y0*w+x;
+          if(edge[p]>0){
+            run++;
+            if(run>bestRun){bestRun=run; bestX=x; bestY=y0;}
+          }else{run=0;}
+        }
+        if(bestRun>=minLen){
+          let x1=bestX-bestRun, y1=bestY, x2=bestX, y2=bestY;
+          lines.push([Math.round(x1),Math.round(y1),Math.round(x2),Math.round(y2)]);
+        }
+      }
+    }
+  }
+
+  // 选最长 + 颜色分数
+  let best=null, bestScore=0;
+  for(let l of lines){
+    let dx=l[2]-l[0], dy=l[3]-l[1];
+    let len=Math.sqrt(dx*dx+dy*dy);
+    if(len<100)continue;
+
+    // 颜色均匀性
+    let cs=0, nx=-dy/len, ny=dx/len, off=10;
+    let inner=[];
+    for(let t=0;t<8;t++){
+      let px=Math.round(l[0]+dx*t/7+nx*off), py=Math.round(l[1]+dy*t/7+ny*off);
+      if(px<0||px>=w||py<0||py>=h)continue;
+      let i0=(py*w+px)*4;
+      inner.push([img.data[i0],img.data[i0+1],img.data[i0+2]]);
+    }
+    if(inner.length>=5){
+      let m=[0,0,0],v=[0,0,0];
+      for(let c of inner){m[0]+=c[0];m[1]+=c[1];m[2]+=c[2];}
+      m=m.map(x=>x/inner.length);
+      for(let c of inner){v[0]+=(c[0]-m[0])**2;v[1]+=(c[1]-m[1])**2;v[2]+=(c[2]-m[2])**2;}
+      cs=Math.max(0,1-Math.sqrt((v[0]+v[1]+v[2])/inner.length/3)/100);
+    }
+    let score=len*(1+cs);
+    if(score>bestScore){bestScore=score; best=l;}
+  }
+  return best;
+}
+
+function calc(ln){
+  let[x1,y1,x2,y2]=ln;
+  // Roll补偿
+  if(Math.abs(imu.roll)>0.5){
+    let r=-imu.roll*Math.PI/180,cr=Math.cos(r),sr=Math.sin(r);
+    let cx0=(x1+x2)/2,cy0=(y1+y2)/2;
+    let d=(x1-x2)/2, d=(y1-y2)/2;
+    // 旋转端点
+    let dx1=x1-cx0,dy1=y1-cy0,dx2=x2-cx0,dy2=y2-cy0;
+    x1=dx1*cr-dy1*sr+cx0; y1=dx1*sr+dy1*cr+cy0;
+    x2=dx2*cr-dy2*sr+cx0; y2=dx2*sr+dy2*cr+cy0;
+  }
+  if(x1>x2)[x1,y1,x2,y2]=[x2,y2,x1,y1];
+  let ia=Math.atan2(y2-y1,x2-x1)*180/Math.PI;
+  let ra=ia-imu.pitch;
+  let p=Math.tan(ra*Math.PI/180)*100;
+  return{realAngle:ra,percent:p,imgAngle:ia,x1,y1,x2,y2};
+}
+
+function estHt(ln,ih){
+  let cy=(ln[1]+ln[3])/2;
+  let apx=60/ih, va=(cy-ih/2)*apx;
+  let ta=va+imu.pitch, d=2;
+  return Math.max(0,1.6-d*Math.tan(ta*Math.PI/180));
+}
+
+function loop(){
+  if(!streaming){requestAnimationFrame(loop);return;}
+  let w=v.videoWidth||640, h=v.videoHeight||480;
+  c.width=w; c.height=h;
+  cx.drawImage(v,0,0,w,h);
+  let img=cx.getImageData(0,0,w,h);
+
+  let track=prev&&lost<maxLost;
+  let ln=detectLines(img,w,h,track);
+  if(ln){prev=ln; lost=0;}
+  else if(prev)lost++;
+
+  if(ln){
+    let sl=calc(ln);
+    let ht=estHt(ln,h);
+    let absA=Math.abs(sl.realAngle);
+
+    // 绘制
+    cx.strokeStyle='#0f0'; cx.lineWidth=3;
+    cx.beginPath(); cx.moveTo(sl.x1,sl.y1); cx.lineTo(sl.x2,sl.y2); cx.stroke();
+    cx.fillStyle='#0f0';
+    cx.beginPath(); cx.arc(sl.x1,sl.y1,6,0,Math.PI*2); cx.fill();
+    cx.beginPath(); cx.arc(sl.x2,sl.y2,6,0,Math.PI*2); cx.fill();
+    let my=(sl.y1+sl.y2)/2;
+    cx.strokeStyle='rgba(150,150,150,0.5)'; cx.lineWidth=1;
+    cx.setLineDash([8,8]); cx.beginPath(); cx.moveTo(0,my); cx.lineTo(w,my); cx.stroke(); cx.setLineDash([]);
+
+    // 面板
+    cx.fillStyle='rgba(0,0,0,0.65)'; cx.fillRect(10,10,260,130);
+    let sy=32;
+    cx.font='bold 15px monospace';
+    if(absA>=2&&absA<=5)cx.fillStyle='#0f0';else if(absA<1.5||absA>6)cx.fillStyle='#f44';else cx.fillStyle='#ff0';
+    cx.fillText(`坡度: ${sl.realAngle.toFixed(1)}° (${sl.percent.toFixed(1)}%)`,20,sy); sy+=26;
+    cx.fillStyle='#0f0'; cx.fillText(`高度: ${ht.toFixed(2)}m (DN${pipeDia})`,20,sy); sy+=26;
+    cx.fillStyle='#aaa'; cx.font='12px monospace';
+    cx.fillText(`pitch:${imu.pitch.toFixed(0)}° roll:${imu.roll.toFixed(0)}°`,20,sy); sy+=24;
+    cx.font='bold 16px monospace';
+    if(absA>=2&&absA<=5){cx.fillStyle='#0f0';cx.fillText('PASS',20,sy);}
+    else{cx.fillStyle='#f44';cx.fillText('需调整',20,sy);}
+  }
+
+  cx.fillStyle='rgba(150,150,150,0.7)'; cx.font='11px monospace';
+  cx.fillText('目标: 坡度2-5° | 高度0.5-1.5m | 点击画面选管',10,h-10);
+
+  rf++;
+  let now=performance.now();
+  if(now-t0>=1000){fps=Math.round(rf*1000/(now-t0)); document.getElementById('sf').textContent=fps; rf=0;t0=now;}
+  requestAnimationFrame(loop);
+}
+
+// 按钮
+let btnVals={bu:{p:0,r:0},bd:{p:25,r:0},bl:{p:0,r:-15},br:{p:0,r:15}};
+Object.keys(btnVals).forEach(id=>{
+  let b=document.getElementById(id);
+  b.addEventListener('pointerdown',()=>{b.classList.add('on');imu.pitch=btnVals[id].p;imu.roll=btnVals[id].r;});
+  b.addEventListener('pointerup',()=>{b.classList.remove('on');imu.pitch=0;imu.roll=0;});
+  b.addEventListener('pointerleave',()=>{b.classList.remove('on');imu.pitch=0;imu.roll=0;});
+});
+document.getElementById('bz').addEventListener('click',()=>{imu.pitch=0;imu.roll=0;});
+document.getElementById('sel').addEventListener('change',()=>{pipeDia=parseInt(document.getElementById('sel').value);});
+
+</script>
+</body>
+</html>

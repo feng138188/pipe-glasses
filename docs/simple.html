@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Simple</title>
+<style>
+body{margin:0;background:#000}
+video,canvas{width:100%;height:100%;position:absolute;top:0;left:0;object-fit:cover}
+#msg{position:absolute;top:10px;left:10px;color:#fff;font:14px monospace;z-index:10;background:rgba(0,0,0,0.7);padding:6px 12px}
+</style>
+</head><body>
+<video id="v" autoplay playsinline muted></video>
+<canvas id="c"></canvas>
+<div id="msg">点击启动</div>
+<script>
+let m=document.getElementById('msg');
+let v=document.getElementById('v');
+let c=document.getElementById('c');
+let cx=c.getContext('2d');
+
+m.onclick=async ()=>{
+  m.textContent='请求摄像头...';
+  let s=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:640},height:{ideal:480}},audio:false});
+  v.srcObject=s;
+  v.onloadedmetadata=()=>{v.play(); m.textContent='运行中'; loop();};
+};
+
+function loop(){
+  let vw=v.videoWidth||640, vh=v.videoHeight||480;
+  c.width=vw; c.height=vh;
+  cx.drawImage(v,0,0,vw,vh);
+  // 红色十字
+  cx.strokeStyle='#f00'; cx.lineWidth=3;
+  cx.beginPath(); cx.moveTo(vw/2-20,vh/2); cx.lineTo(vw/2+20,vh/2); cx.stroke();
+  cx.beginPath(); cx.moveTo(vw/2,vh/2-20); cx.lineTo(vw/2,vh/2+20); cx.stroke();
+  // 帧数
+  cx.fillStyle='#0f0'; cx.font='16px monospace';
+  cx.fillText('LOOP OK '+Date.now()%10000,10,50);
+  requestAnimationFrame(loop);
+}
+</script>
+</body></html>

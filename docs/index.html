@@ -237,6 +237,12 @@ function loop(){
   cx.fillStyle='rgba(150,150,150,0.7)'; cx.font='11px monospace';
   cx.fillText('目标:2-5° | SAM/椭圆 | '+(apiUrl?'AI':'离线'),10,vh-10);
 
+  // 调试：黄点=循环在跑  蓝线=检测到线
+  cx.fillStyle='#ff0'; cx.fillRect(0,0,8,8);
+  let found=detectLocal(img,vw,vh);
+  if(found){ cx.strokeStyle='#00f'; cx.lineWidth=2;
+    cx.beginPath(); cx.moveTo(found[0],found[1]); cx.lineTo(found[2],found[3]); cx.stroke(); }
+
   rf++; let now=performance.now();
   if(now-t0>=1000){document.getElementById('sf').textContent=Math.round(rf*1000/(now-t0));rf=0;t0=now;}
   requestAnimationFrame(loop);

@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>AI 管道施工眼镜</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;}
+body{display:flex;flex-direction:column;align-items:center;justify-content:center;touch-action:manipulation;}
+#box{position:relative;width:100vw;flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;}
+#c,#h{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;}
+#h{display:none;}
+#o{position:absolute;top:0;left:0;z-index:10;background:rgba(0,0,0,0.72);color:#fff;
+  padding:8px 14px;font:14px monospace;border-radius:0 0 10px 0;line-height:1.6;pointer-events:none;max-width:85%;}
+#bar{display:flex;gap:8px;padding:6px 10px;background:#181818;width:100%;color:#aaa;font:12px monospace;justify-content:center;}
+.v{color:#0f0}.y{color:#ff0}.r{color:#f44}
+#ctl{display:flex;gap:6px;padding:6px;flex-wrap:wrap;justify-content:center;background:#111;width:100%;}
+button{font-size:15px;padding:9px 14px;border:none;border-radius:8px;background:#2a2a2a;color:#ccc;min-width:40px;user-select:none;-webkit-user-select:none;}
+button.on{background:#0a0;color:#fff;}
+select{font-size:15px;padding:9px;border-radius:8px;background:#2a2a2a;color:#ccc;border:none;}
+</style>
+</head>
+<body>
+<div id="box">
+  <video id="vi" autoplay playsinline></video>
+  <canvas id="h"></canvas>
+  <canvas id="c"></canvas>
+  <div id="o">加载 OpenCV.js...</div>
+</div>
+<div id="bar">
+  <span>俯仰:<span class="v" id="sp">0°</span></span>
+  <span>横滚:<span class="v" id="sr">0°</span></span>
+  <span>FPS:<span class="v" id="sf">0</span></span>
+  <span>耗时:<span class="v" id="st">0ms</span></span>
+</div>
+<div id="ctl">
+  <button id="bu">▲</button><button id="bd">▼</button>
+  <button id="bl">◀</button><button id="br">▶</button>
+  <button id="bz">归零</button>
+  <select id="sel">
+    <option value="50">DN50</option><option value="100" selected>DN100</option>
+    <option value="150">DN150</option><option value="200">DN200</option><option value="300">DN300</option>
+  </select>
+</div>
+
+<script>
+// ============ 全局状态 ============
+let cvReady = false;
+let streaming = false;
+let v, c, cx, hc, hx;
+let imu = {pitch:0, roll:0};
+let pipeDia = 100;  // DN100
+let eyeH = 1.6;     // 眼镜高度(m)
+let focalLen = 800; // 焦距(px)
+
+// 检测结果
+let result = {detected:false, angle:0, percent:0, height:0, conf:0, x1:0,y1:0,x2:0,y2:0};
+// 跟踪
+let prevLine = null, trackLost = 0, maxTrackLost = 40, trackBand = 60;
+// 点击
+let tapPt = null;
+// FPS
+let rf=0, t0=performance.now(), procMs=0;
+
+// ============ 加载 OpenCV.js ============
+function loadOpenCV() {
+  let script = document.createElement('script');
+  script.src = 'https://docs.opencv.org/4.x/opencv.js';
+  script.onload = () => {
+    if (cv && cv.Mat) {
+      cvReady = true;
+      startCamera();
+    } else {
+      // OpenCV.js 异步初始化
+      cv['onRuntimeInitialized'] = () => {
+        cvReady = true;
+        startCamera();
+      };
+    }
+  };
+  script.onerror = () => {
+    document.getElementById('o').innerHTML = 'OpenCV 加载失败<br>请检查网络后刷新';
+  };
+  document.head.appendChild(script);
+}
+
+// ============ 摄像头 ============
+async function startCamera() {
+  v = document.getElementById('vi');
+  c = document.getElementById('c'); cx = c.getContext('2d');
+  hc = document.getElementById('h'); hx = hc.getContext('2d');
+
+  try {
+    let stream = await navigator.mediaDevices.getUserMedia({
+      video: {facingMode:'environment', width:{ideal:640}, height:{ideal:480}}, audio:false
+    });
+    v.srcObject = stream;
+    v.onloadedmetadata = () => {
+      v.play();
+      streaming = true;
+      document.getElementById('o').innerHTML = '对准管道<br><small>点击屏幕锁定</small>';
+      setTimeout(()=>{if(result.conf>0)document.getElementById('o').style.display='none';},2000);
+      detectLoop();
+    };
+  } catch(e) {
+    document.getElementById('o').innerHTML = '摄像头错误: '+e.message;
+  }
+}
+
+// ============ 陀螺仪 ============
+if (typeof DeviceOrientationEvent !== 'undefined') {
+  window.addEventListener('deviceorientation', e => {
+    if (e.beta !== null) imu.pitch = e.beta;
+    if (e.gamma !== null) imu.roll = e.gamma;
+    document.getElementById('sp').textContent = imu.pitch.toFixed(1)+'°';
+    document.getElementById('sr').textContent = imu.roll.toFixed(1)+'°';
+  });
+}
+
+// ============ 点击锁定 ============
+c?.addEventListener('click', e => {
+  let r = c.getBoundingClientRect();
+  let vw = v.videoWidth || 640, vh = v.videoHeight || 480;
+  tapPt = {
+    x: (e.clientX - r.left) * vw / r.width,
+    y: (e.clientY - r.top) * vh / r.height
+  };
+  document.getElementById('o').style.display = 'block';
+  document.getElementById('o').innerHTML = '已锁定';
+  setTimeout(()=>{document.getElementById('o').style.display = 'none';}, 800);
+});
+
+// ============ 核心检测（OpenCV.js） ============
+function detectPipe(src) {
+  let gray = new cv.Mat();
+  let edges = new cv.Mat();
+  let lines = new cv.Mat();
+
+  try {
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    // CLAHE
+    let clahe = new cv.CLAHE(2.0, new cv.Size(8,8));
+    clahe.apply(gray, gray);
+    clahe.delete();
+
+    // Canny
+    cv.Canny(gray, edges, 80, 200);
+
+    // ROI mask（跟踪模式）
+    let searchEdges = edges;
+    if (prevLine && trackLost < maxTrackLost) {
+      let cy = (prevLine[1] + prevLine[3]) / 2;
+      let top = Math.max(0, cy - trackBand);
+      let bot = Math.min(src.rows, cy + trackBand);
+      let mask = cv.Mat.zeros(src.rows, src.cols, cv.CV_8UC1);
+      let roi = new cv.Rect(0, top, src.cols, bot - top);
+      cv.rectangle(mask, new cv.Point(0, top), new cv.Point(src.cols, bot), new cv.Scalar(255), -1);
+      cv.bitwise_and(edges, mask, edges);
+      mask.delete();
+    }
+
+    // HoughLinesP
+    cv.HoughLinesP(edges, lines, 1, Math.PI/180, 50, 150, 40);
+
+    let best = null, bestScore = 0;
+    for (let i = 0; i < lines.rows; i++) {
+      let x1 = lines.data32S[i*4], y1 = lines.data32S[i*4+1];
+      let x2 = lines.data32S[i*4+2], y2 = lines.data32S[i*4+3];
+      let dx = x2-x1, dy = y2-y1;
+      let len = Math.sqrt(dx*dx + dy*dy);
+      let ang = Math.abs(Math.atan2(Math.abs(dy), Math.abs(dx)) * 180 / Math.PI);
+      if (ang > 25 || len < 100) continue;
+
+      // 颜色分数（简化：采样内侧颜色方差）
+      let cs = 0;
+      if (src && len > 50) {
+        let nx = -dy/len, ny = dx/len;
+        let off = 12;
+        let samples = [], inner = [];
+        for (let s = 0; s < 10; s++) {
+          let t = s / 9;
+          let mx = Math.floor(x1 + dx*t + nx*off);
+          let my = Math.floor(y1 + dy*t + ny*off);
+          if (mx>=0 && mx<src.cols && my>=0 && my<src.rows) {
+            let px = my*src.cols*4 + mx*4;
+            let b = src.data[px], g = src.data[px+1], rv = src.data[px+2];
+            inner.push([rv,g,b]);
+          }
+        }
+        if (inner.length >= 5) {
+          let means = [0,0,0];
+          inner.forEach(c => {means[0]+=c[0]; means[1]+=c[1]; means[2]+=c[2];});
+          means = means.map(v=>v/inner.length);
+          let vars = [0,0,0];
+          inner.forEach(c => {vars[0]+=(c[0]-means[0])**2; vars[1]+=(c[1]-means[1])**2; vars[2]+=(c[2]-means[2])**2;});
+          let stdv = Math.sqrt(vars.reduce((a,b)=>a+b,0)/inner.length/3) / 100;
+          cs = Math.max(0, 1 - stdv);
+        }
+      }
+
+      let score = len * (1 + cs);
+
+      // tap 锁定：优先选离 tap 近的
+      if (tapPt && len > 100) {
+        let mx = (x1+x2)/2, my = (y1+y2)/2;
+        let d = Math.sqrt((mx-tapPt.x)**2 + (my-tapPt.y)**2);
+        if (d < 120) score += 2000;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = [x1, y1, x2, y2];
+      }
+    }
+
+    tapPt = null;
+
+    if (best) {
+      prevLine = best;
+      trackLost = 0;
+      return best;
+    } else {
+      if (prevLine) trackLost++;
+      return null;
+    }
+  } finally {
+    gray.delete(); edges.delete(); lines.delete();
+  }
+}
+
+// ============ 坡度计算 ============
+function calcSlope(line, imu, imgW, imgH) {
+  let [x1,y1,x2,y2] = line;
+
+  // Roll 补偿
+  if (Math.abs(imu.roll) > 0.5) {
+    let rollRad = -imu.roll * Math.PI / 180;
+    let cosR = Math.cos(rollRad), sinR = Math.sin(rollRad);
+    let cx = imgW/2, cy = imgH/2;
+    let dx1=x1-cx, dy1=y1-cy, dx2=x2-cx, dy2=y2-cy;
+    x1 = dx1*cosR - dy1*sinR + cx;
+    y1 = dx1*sinR + dy1*cosR + cy;
+    x2 = dx2*cosR - dy2*sinR + cx;
+    y2 = dx2*sinR + dy2*cosR + cy;
+  }
+
+  if (x1 > x2) { [x1,y1,x2,y2] = [x2,y2,x1,y1]; }
+
+  let imgAngle = Math.atan2(y2-y1, x2-x1) * 180 / Math.PI;
+  let realAngle = imgAngle - imu.pitch;
+  let percent = Math.tan(realAngle * Math.PI / 180) * 100;
+  return {realAngle, percent, imgAngle, x1, y1, x2, y2};
+}
+
+// ============ 高度估计 ============
+function estimateHeight(line, imu, imgH) {
+  let [x1,y1,x2,y2] = line;
+  let pipeCY = (y1+y2)/2;
+  let imgCY = imgH/2;
+
+  // 垂直 FOV 60°
+  let angPerPx = 60.0 / imgH;
+  let viewAng = (pipeCY - imgCY) * angPerPx;
+  let totalAngle = viewAng + imu.pitch;
+
+  // 管径比例尺法
+  let len = Math.sqrt((x2-x1)**2 + (y2-y1)**2);
+  // 管径像素宽度（简化估算）
+  let pipeWpx = len * 0.08;  // 假设管径约为长度的 8%
+  let dist = 2.0;  // 默认 2m
+  if (pipeWpx > 1) {
+    dist = (pipeDia/1000) * focalLen / pipeWpx;
+    dist = Math.max(0.5, Math.min(10, dist));
+  }
+
+  let hDiff = dist * Math.tan(totalAngle * Math.PI / 180);
+  let pipeH = eyeH - hDiff;
+  return Math.max(0, pipeH);
+}
+
+// ============ AR 叠加绘制 ============
+function drawOverlay(line, slope, height, conf) {
+  let vw = v.videoWidth || 640, vh = v.videoHeight || 480;
+  c.width = vw; c.height = vh;
+
+  // 绘制摄像头画面
+  cx.drawImage(v, 0, 0, vw, vh);
+
+  if (!line) return;
+
+  let [x1,y1,x2,y2] = line;
+
+  // 管道检测线（绿色）
+  cx.strokeStyle = '#0f0'; cx.lineWidth = 3;
+  cx.beginPath(); cx.moveTo(x1,y1); cx.lineTo(x2,y2); cx.stroke();
+
+  // 端点
+  cx.fillStyle = '#0f0';
+  cx.beginPath(); cx.arc(x1,y1,6,0,Math.PI*2); cx.fill();
+  cx.beginPath(); cx.arc(x2,y2,6,0,Math.PI*2); cx.fill();
+
+  // 水平参考虚线
+  let my = (y1+y2)/2;
+  cx.strokeStyle = 'rgba(150,150,150,0.5)'; cx.lineWidth = 1;
+  cx.setLineDash([8,8]);
+  cx.beginPath(); cx.moveTo(0,my); cx.lineTo(vw,my); cx.stroke();
+  cx.setLineDash([]);
+
+  // 信息面板
+  let px=10, py=10, pw=260, ph=150;
+  cx.fillStyle = 'rgba(0,0,0,0.65)';
+  cx.fillRect(px, py, pw, ph);
+
+  let sy=py+22, lh=26;
+  cx.font = 'bold 15px monospace';
+
+  let absA = Math.abs(slope.realAngle);
+  if (absA>=2&&absA<=5) cx.fillStyle='#0f0';
+  else if (absA<1.5||absA>6) cx.fillStyle='#f44';
+  else cx.fillStyle='#ff0';
+  cx.fillText(`坡度: ${slope.realAngle.toFixed(1)}° (${slope.percent.toFixed(1)}%)`, px+10, sy); sy+=lh;
+
+  cx.fillStyle = '#0f0';
+  cx.fillText(`高度: ${height.toFixed(2)}m (DN${pipeDia})`, px+10, sy); sy+=lh;
+
+  cx.fillStyle = '#aaa'; cx.font = '12px monospace';
+  cx.fillText(`置信度: ${Math.round(conf*100)}%  pitch:${imu.pitch.toFixed(0)}° roll:${imu.roll.toFixed(0)}°`, px+10, sy); sy+=lh;
+
+  cx.font = 'bold 16px monospace';
+  if (absA>=2&&absA<=5) {cx.fillStyle='#0f0'; cx.fillText('PASS', px+10, sy);}
+  else {cx.fillStyle='#f44'; cx.fillText('需调整', px+10, sy);}
+}
+
+// ============ 主检测循环 ============
+function detectLoop() {
+  if (!streaming || !cvReady) { requestAnimationFrame(detectLoop); return; }
+
+  let tStart = performance.now();
+  let vw = v.videoWidth || 640, vh = v.videoHeight || 480;
+
+  // 隐藏 canvas 获取帧数据
+  hc.width = vw; hc.height = vh;
+  hx.drawImage(v, 0, 0, vw, vh);
+  let frame = hx.getImageData(0, 0, vw, vh);
+
+  // OpenCV 检测
+  let src = cv.matFromImageData(frame);
+  let line = detectPipe(src);
+  src.delete();
+
+  procMs = performance.now() - tStart;
+
+  let slope = {realAngle:0, percent:0, imgAngle:0, x1:0,y1:0,x2:0,y2:0};
+  let height = 0, conf = 0;
+
+  if (line) {
+    [slope.x1, slope.y1, slope.x2, slope.y2] = line;
+    slope = calcSlope(line, imu, vw, vh);
+    height = estimateHeight(line, imu, vh);
+    conf = Math.min(1, Math.sqrt((line[2]-line[0])**2+(line[3]-line[1])**2) / 300);
+  }
+
+  result = {detected:!!line, angle:slope.realAngle, percent:slope.percent,
+            height, conf, x1:slope.x1,y1:slope.y1,x2:slope.x2,y2:slope.y2};
+
+  drawOverlay(line, slope, height, conf);
+
+  // 目标范围
+  cx.fillStyle = 'rgba(150,150,150,0.7)'; cx.font = '11px monospace';
+  cx.fillText('目标: 坡度2-5° | 高度0.5-1.5m', 10, vh-10);
+
+  // FPS + 耗时
+  rf++;
+  let now = performance.now();
+  if (now - t0 >= 1000) {
+    document.getElementById('sf').textContent = Math.round(rf*1000/(now-t0));
+    document.getElementById('st').textContent = Math.round(procMs)+'ms';
+    rf = 0; t0 = now;
+  }
+
+  requestAnimationFrame(detectLoop);
+}
+
+// ============ 按钮 ============
+function sendIMU() {
+  document.getElementById('sp').textContent = imu.pitch.toFixed(1)+'°';
+  document.getElementById('sr').textContent = imu.roll.toFixed(1)+'°';
+}
+
+let btns = {bu:{p:0,r:0},bd:{p:25,r:0},bl:{p:0,r:-15},br:{p:0,r:15}};
+Object.keys(btns).forEach(id => {
+  let b = document.getElementById(id);
+  b.addEventListener('pointerdown', () => {
+    b.classList.add('on');
+    imu.pitch = btns[id].p; imu.roll = btns[id].r;
+    sendIMU();
+  });
+  b.addEventListener('pointerup', () => {b.classList.remove('on'); imu.pitch=0; imu.roll=0; sendIMU();});
+  b.addEventListener('pointerleave', () => {b.classList.remove('on'); imu.pitch=0; imu.roll=0; sendIMU();});
+});
+document.getElementById('bz').addEventListener('click', () => {imu.pitch=0; imu.roll=0; sendIMU();});
+document.getElementById('sel').addEventListener('change', () => {
+  pipeDia = parseInt(document.getElementById('sel').value);
+});
+
+// ============ 启动 ============
+loadOpenCV();
+</script>
+</body>
+</html>
