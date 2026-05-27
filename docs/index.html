@@ -140,9 +140,9 @@ function detectLocal(img,w,h){
     let p=y*w+x;
     let gx=-gray[p-w-1]-2*gray[p-1]-gray[p+w-1]+gray[p-w+1]+2*gray[p+1]+gray[p+w+1];
     let gy=-gray[p-w-1]-2*gray[p-w]-gray[p-w+1]+gray[p+w-1]+2*gray[p+w]+gray[p+w+1];
-    edge[p]=(Math.sqrt(gx*gx+gy*gy)>70)?255:0;
+    edge[p]=(Math.sqrt(gx*gx+gy*gy)>30)?255:0;
   }
-  let mrg=30;
+  let mrg=10;
   let best=null,bl=0,ryS=mrg,ryE=h-mrg;
   if(prev&&lost<30){let cy=(prev[1]+prev[3])/2; ryS=Math.max(mrg,cy-50); ryE=Math.min(h-mrg,cy+50);}
 
@@ -155,7 +155,7 @@ function detectLocal(img,w,h){
       else run=0;
     }
     if(run>bestRun){bestRun=run; bestX=w;}
-    if(bestRun>=60) rowRuns.push({y, bestX, bestRun});
+    if(bestRun>=30) rowRuns.push({y, bestX, bestRun});
   }
 
   // 合并相邻行的线段（允许±15px偏移 = 倾斜管道）
@@ -169,13 +169,13 @@ function detectLocal(img,w,h){
       let prev=cluster[cluster.length-1];
       // x位置接近（允许倾斜）
       let dx=Math.abs(rowRuns[j].bestX - prev.bestX);
-      if(dx<25){
+      if(dx<30){
         cluster.push(rowRuns[j]); used.add(j);
         minX=Math.min(minX, rowRuns[j].bestX-rowRuns[j].bestRun);
         maxX=Math.max(maxX, rowRuns[j].bestX);
       }
     }
-    if(cluster.length>=5){ // 至少5行
+    if(cluster.length>=3){ // 至少5行
       let y1=cluster[0].y, y2=cluster[cluster.length-1].y;
       let x1=minX, x2=maxX;
       let len=Math.sqrt((x2-x1)**2+(y2-y1)**2);
