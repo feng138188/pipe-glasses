@@ -10,7 +10,7 @@ body{background:#000;display:flex;flex-direction:column;height:100vh;touch-actio
 #box{flex:1;position:relative;overflow:hidden}
 video{z-index:1;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
 canvas{z-index:2;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
-#touch{z-index:3;position:absolute;top:0;left:0;width:100%;height:100%;touch-action:none}
+#touch{z-index:3;position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(255,0,0,0.005)}
 #msg{position:absolute;top:0;left:0;z-index:10;background:rgba(0,0,0,0.75);color:#fff;padding:8px 14px;font:14px monospace;border-radius:0 0 10px 0;pointer-events:none}
 #bar{display:flex;gap:6px;padding:6px 8px;background:#181818;color:#aaa;font:12px monospace;justify-content:center;flex-wrap:wrap}
 #ctl{display:flex;gap:6px;padding:6px;background:#111;justify-content:center;flex-wrap:wrap}
@@ -47,7 +47,7 @@ button{padding:10px 14px;border:none;border-radius:8px;font-size:15px;min-width:
 // 状态
 let v,c,cx,hc,hx,streaming=false;
 let imu={pitch:0,roll:0}, rf=0, t0=0;
-let prev=null, lost=0, mode='sam';
+let prev=null, lost=0, mode='sam', stableCnt=0, pendingLine=null;
 let dragBox=null, dragStart=null;
 let apiUrl=(new URLSearchParams(location.search).get('dino')||'');
 let m=document.getElementById('msg');
@@ -97,7 +97,6 @@ tc.addEventListener('pointerdown',e=>{
   if(mode==='ellipse'){
     dragStart={x,y}; dragBox=null;
   }else{
-    if(!apiUrl)return;
     m.style.display='block'; m.innerHTML='SAM...';
     c.toBlob(b=>{callAPI('/sam?x='+x+'&y='+y,b);},'image/jpeg',0.6);
   }
@@ -120,7 +119,7 @@ tc.addEventListener('pointerup',e=>{
 tc.addEventListener('pointercancel',()=>{dragStart=null; dragBox=null;});
 
 async function callAPI(path,blob){
-  if(!apiUrl||!blob)return;
+  if(!blob)return;
   let fd=new FormData(); fd.append('file',blob,'f.jpg');
   try{
     let r=await fetch(apiUrl+path,{method:'POST',body:fd});
@@ -161,13 +160,31 @@ function loop(){
   cx.drawImage(v,0,0,vw,vh);
   let img=cx.getImageData(0,0,vw,vh);
 
-  // 仅在纯离线时跑本地检测，有API时靠用户点SAM/椭圆
-  if(!apiUrl && (!prev||lost>0)){
-    let line=detectLocal(img,vw,vh);
-    if(line){prev=line; lost=0;}else if(prev)lost++;
+  // 始终跑本地检测（带稳定过滤）
+  let line=detectLocal(img,vw,vh);
+  if(line){
+    // 检查是否和上一帧候选位置接近
+    if(pendingLine){
+      let dy=Math.abs(((line[1]+line[3])/2) - ((pendingLine[1]+pendingLine[3])/2));
+      if(dy<40){ stableCnt++; }
+      else{ stableCnt=1; pendingLine=line; }
+    }else{ pendingLine=line; stableCnt=1; }
+    // 需要连续5帧稳定才锁定
+    if(stableCnt>=5 && (!prev || stableCnt>=3)){
+      prev=line; lost=0;
+    }
+  }else{
+    stableCnt=0; pendingLine=null;
+    if(prev)lost++;
+    if(lost>15){prev=null; lost=0;}
   }
-  // 跟踪丢失自动清除（API模式）
-  if(apiUrl && lost>90){prev=null; lost=0;}
+  // 每60帧用SAM自动验证一次（API模式）
+  if(apiUrl && prev && rf%60===0){
+    c.toBlob(b=>{
+      let mx=Math.round((prev[0]+prev[2])/2), my=Math.round((prev[1]+prev[3])/2);
+      callAPI('/sam?x='+mx+'&y='+my,b);
+    },'image/jpeg',0.5);
+  }
 
   if(prev){
     let[x1,y1,x2,y2]=prev;
